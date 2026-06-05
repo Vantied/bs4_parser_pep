@@ -6,23 +6,20 @@ import requests_cache
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 
-from constants import BASE_DIR, MAIN_DOC_URL, PEP_URL, EXPECTED_STATUS
+from constants import (BASE_DIR, MAIN_DOC_URL,
+                       PEP_URL, EXPECTED_STATUS, DOWNLOADS)
 from configs import configure_argument_parser, configure_logging
 from outputs import control_output
-from utils import get_response, find_tag
+from utils import get_response, find_tag, get_soup
+from exceptions import ParserVersionsNotFoundException
 
 
 def whats_new(session):
     whats_new_url = urljoin(MAIN_DOC_URL, 'whatsnew/')
+    soup = get_soup(session, whats_new_url)
 
-    response = get_response(session, whats_new_url)
-    if response is None:
-        return
-
-    soup = BeautifulSoup(response.text, features='lxml')
-
-    main_div = find_tag(soup, 'section', attrs={'id': 'what-s-new-in-python'})
-    div_with_ul = find_tag(main_div, 'div', attrs={'class': 'toctree-wrapper'})
+    div_with_ul = soup.select_one(
+        'section#what-s-new-in-python div.toctree-wrapper')
     sections_by_python = div_with_ul.find_all(
         'li', attrs={'class': 'toctree-l1'})
 
@@ -46,11 +43,7 @@ def whats_new(session):
 
 
 def latest_versions(session):
-    response = get_response(session, MAIN_DOC_URL)
-    if response is None:
-        return
-
-    soup = BeautifulSoup(response.text, 'lxml')
+    soup = get_soup(session, MAIN_DOC_URL)
 
     sidebar = find_tag(soup, 'div', {'class': 'sphinxsidebarwrapper'})
     ul_tags = sidebar.find_all('ul')
@@ -59,7 +52,8 @@ def latest_versions(session):
             a_tags = ul.find_all('a')
             break
     else:
-        raise Exception('Не найден список c версиями Python')
+        raise ParserVersionsNotFoundException(
+            'Не найден список c версиями Python')
 
     results = [('Ссылка на статью', 'Заголовок', 'Редактор, автор')]
     pattern = r'Python (?P<version>\d\.\d+) \((?P<status>.*)\)'
@@ -81,11 +75,7 @@ def download(session):
     main_url = 'https://docs.python.org/3.9/'
     downloads_url = urljoin(main_url, 'download.html')
 
-    response = get_response(session, downloads_url)
-    if response is None:
-        return
-
-    soup = BeautifulSoup(response.text, 'lxml')
+    soup = get_soup(session, downloads_url)
 
     main_tag = find_tag(soup, 'div', {'role': 'main'})
     table_tag = find_tag(main_tag, 'table', {'class': 'docutils'})
@@ -95,7 +85,7 @@ def download(session):
     archive_url = urljoin(downloads_url, pdf_a4_link)
 
     filename = archive_url.split('/')[-1]
-    downloads_dir = BASE_DIR / 'downloads'
+    downloads_dir = BASE_DIR / DOWNLOADS
     downloads_dir.mkdir(exist_ok=True)
     archive_path = downloads_dir / filename
     response = session.get(archive_url)
@@ -106,16 +96,12 @@ def download(session):
 
 
 def pep(session):
-    response = get_response(session, PEP_URL)
-    if response is None:
-        return
-
-    soup = BeautifulSoup(response.text, 'lxml')
+    soup = get_soup(session, PEP_URL)
     full_table = find_tag(soup, 'section', {'id': 'index-by-category'})
     separate_table = full_table.find_all('section')
 
     status_counts = {}
-    results = [('Статус', 'Количество')]
+    results = [('Status', 'Quantity')]
 
     for category in separate_table:
         tbody_tag = category.find('tbody')
@@ -181,15 +167,20 @@ def main():
     args = arg_parser.parse_args()
     logging.info(f'Аргументы командной строки: {args}')
 
-    session = requests_cache.CachedSession()
-    if args.clear_cache:
-        session.cache.clear()
+    try:
+        session = requests_cache.CachedSession()
+        if args.clear_cache:
+            session.cache.clear()
 
-    parser_mode = args.mode
-    results = MODE_TO_FUNCTION[parser_mode](session)
+        parser_mode = args.mode
+        results = MODE_TO_FUNCTION[parser_mode](session)
 
-    if results is not None:
-        control_output(results, args)
+        if results is not None:
+            control_output(results, args)
+
+    except Exception:
+        logging.exception('Сбой в работе программы', stack_info=True)
+
     logging.info('Парсер завершил работу.')
 
 
